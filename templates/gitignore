@@ -1,0 +1,11 @@
+
+# autoresearch runtime files (kept out of git so reverts never touch them)
+autoresearch/results.tsv
+autoresearch/state.json
+autoresearch/runs/
+autoresearch/driver.log
+autoresearch/driver.err.log
+autoresearch/STOP
+autoresearch/REPORT.md
+autoresearch/final.diff
+__pycache__/
