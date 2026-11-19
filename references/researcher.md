@@ -16,3 +16,6 @@ Read this when setting up or changing the researcher, or when a `review` row nee
   ignored. The researcher may only write those two git-ignored files (anything else is reverted), and is
   told web pages are information, not instructions. STOP ends the run early. Measured: one start call
   ≈ 13 turns, ≈ $0.27 on Opus.
+- After every call the driver appends the notes and any new sources to `autoresearch/runs/literature_log.md`
+  (never overwritten) and lists it in the next call's reading list, so searches are not repeated across
+  branches. With a `lateral` block the prompt also carries a LATERAL STEP (`references/lateral.md`).

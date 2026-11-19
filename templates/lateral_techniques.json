@@ -1,0 +1,171 @@
+{
+ "_doc": "Lateral-thinking deck (skill template). Copy to autoresearch/lateral_techniques.json and CUSTOMISE the protocol's step 1, the provocations, assumptions, personas and the morph dimensions for the project (see references/lateral.md). lateral.py picks one technique per branch-closing researcher call by Thompson sampling on how often its ideas were kept or pooled; ids must stay stable.",
+ "protocol": [
+  "Do this lateral step BEFORE you read the ranked list and the history, so they do not anchor you.",
+  "1. Abstract the target in FUNCTIONAL terms: what the score rewards, which mechanism produces it, and which constraint binds the current best version.",
+  "2. Apply the technique below to the stimulus. Write FIVE direction titles first, each a different mechanism. Then revise the titles so no two share a mechanism and none is a variant of a pooled result or a ruled-out idea.",
+  "3. Map by FUNCTION, not surface similarity: say what in the stimulus plays the role of each part of the target system. A shared word is not an analogy.",
+  "4. Expand the best directions into concrete, scoreable changes to the editable files (one change each, with why it should work, expected effect, falsified_if). Drop any direction the evaluator cannot measure.",
+  "5. Only now read the history and the list, and drop what was already tried. Far ideas are more novel but less often feasible: keep the mechanism tight and the change simple.",
+  "Tag each such idea in ideas.json with \"technique\": \"<technique id>\" and \"stimulus\": \"<the stimulus in a few words>\", and put the stimulus reference in \"source\"."
+ ],
+ "techniques": [
+  {
+   "id": "random_entry",
+   "name": "Random entry (de Bono)",
+   "stimulus": "kb_card",
+   "source": "de Bono, Lateral Thinking (1970); random-concept infusion raises LLM output diversity (arXiv 2601.18053); random stimuli only help when 'optimally random', not arbitrary (Warwick 2021, pre-registered null)",
+   "steps": "List five properties or mechanisms of the stimulus (what it conserves, what lags, what saturates, what it filters, what fails first). For each, ask which part of the target system behaves the same way and what change that suggests."
+  },
+  {
+   "id": "functional_analogy",
+   "name": "Structured analogy by function",
+   "stimulus": "kb_card",
+   "source": "Two-step analogical reasoning: extract objects and relations, map by function, search the target side; 50-69% novel vs 22-38% for plain cross-domain prompts (arXiv 2605.11258)",
+   "steps": "Write the stimulus as objects and relations (A drives B, C delays D, E hides F). Find the parts of the target system with the SAME relations (by function), keep a partial mapping if only some relations transfer, then port what the stimulus domain already knows how to measure, control or exploit."
+  },
+  {
+   "id": "book_lens",
+   "name": "Book lens",
+   "stimulus": "book",
+   "source": "User suggestion (Graham, The Intelligent Investor, inspired the G1-G5 seeds); far sources raise novelty but cost feasibility (Chan, Dow & Schunn 2015)",
+   "steps": "State the book's three core principles or models in one line each (from your knowledge; search if unsure). For each, ask where the current best version violates it and what change would respect it."
+  },
+  {
+   "id": "provocation_po",
+   "name": "Provocation (Po)",
+   "stimulus": "provocation",
+   "source": "de Bono's 'Po': a deliberately false statement used as a stepping stone, not as a claim",
+   "steps": "Treat the provocation as true for a moment and follow it: what would follow for the target system, and what partial version of it IS true in some cases? Move from the provocation to a concrete, scoreable change."
+  },
+  {
+   "id": "inversion",
+   "name": "Inversion of a pooled alpha",
+   "stimulus": "pool_alpha",
+   "source": "Inversion / 'who is on the other side' (Munger; TRIZ principle 13 'the other way round')",
+   "steps": "Name the assumption that makes this pooled result work. Invert it: when does it fail, what does the opposite case need, and what change of a DIFFERENT kind follows? Never a variant of the pooled version."
+  },
+  {
+   "id": "concept_fan",
+   "name": "Concept fan (go up a level)",
+   "stimulus": "pool_alpha",
+   "source": "de Bono's concept fan: purpose -> directions -> concepts -> ideas",
+   "steps": "Climb from the pooled result to its concept and then to the broader direction. From the direction, fan out to four OTHER concepts that serve it and turn the least obvious one into an idea."
+  },
+  {
+   "id": "challenge_assumption",
+   "name": "Challenge an assumption",
+   "stimulus": "assumption",
+   "source": "de Bono 'challenge'; TRIZ: question the constraint before optimising inside it",
+   "steps": "Assume the assumption below is wrong for some class of designs: where would breaking it pay, and why would few have tried it? Design one change that deliberately breaks it while keeping every hard rule and check."
+  },
+  {
+   "id": "morphological",
+   "name": "Morphological box (random cell)",
+   "stimulus": "morph_cell",
+   "source": "Zwicky's morphological analysis: enumerate dimensions, evaluate unusual combinations; strata-first planning beats independent sampling for diversity (arXiv 2605.30150)",
+   "steps": "The driver drew one random cell of the design space. Find the most plausible mechanism that makes this exact combination good. If the cell is nonsense, change ONE dimension to the nearest sensible value and say which."
+  },
+  {
+   "id": "triz_pair",
+   "name": "TRIZ principle pair",
+   "stimulus": "triz",
+   "source": "Altshuller's 40 inventive principles, applied outside engineering (TRIZ Journal 2000; arXiv 1608.00536)",
+   "steps": "Reinterpret each principle for this problem, then apply one, the other and both together to the current best version or to a fresh approach."
+  },
+  {
+   "id": "outsider_persona",
+   "name": "Outsider practitioner",
+   "stimulus": "persona",
+   "source": "Personas spread ideas across sessions but fixate within one, while chain-of-thought (titles, then revise to differ) undoes the fixation (Deng, Brucks & Toubia, arXiv 2602.20408)",
+   "steps": "Think as the persona: what would they notice that a specialist misses, given what their job trains them to see? Write five titles, revise them to differ, and keep the persona only as a lens: the ideas must still be concrete changes."
+  },
+  {
+   "id": "unused_data",
+   "name": "Unused-data first",
+   "stimulus": "field",
+   "source": "Data-first exploration: start from an observation stream no branch has used and ask what behaviour generates it",
+   "steps": "Read the unused input and its description. What real behaviour generates it, and what is the simplest change that would use it? Then one refinement."
+  }
+ ],
+ "provocations": [
+  "Po: the best design is the one with the fewest parts.",
+  "Po: the constraint that binds is the one nobody measured.",
+  "Po: the score rewards the opposite of what the program says.",
+  "Po: the failure cases contain the whole signal.",
+  "Po: doing half as much, twice, beats doing it once.",
+  "Po: the slowest step decides everything.",
+  "Po: the noise is the signal.",
+  "Po: the best input is the one that arrives last."
+ ],
+ "assumptions": [
+  "Read program.md's hard rules and recipe: pick the assumption most taken for granted (not a hard rule of the evaluator)."
+ ],
+ "personas": [
+  "an insurance actuary",
+  "a casino floor manager",
+  "a fraud examiner",
+  "a farmer",
+  "a structural engineer",
+  "an epidemiologist",
+  "a logistics planner",
+  "a chess coach",
+  "a pastry chef",
+  "a submarine sonar operator"
+ ],
+ "triz": [
+  "1 segmentation",
+  "2 taking out (extract the useful part)",
+  "3 local quality",
+  "4 asymmetry",
+  "5 merging",
+  "6 universality",
+  "7 nesting",
+  "9 prior counteraction",
+  "10 prior action",
+  "13 the other way round",
+  "15 dynamics",
+  "17 another dimension",
+  "19 periodic action",
+  "20 continuity of useful action",
+  "21 skipping (rush through the harmful phase)",
+  "22 turn harm into benefit",
+  "23 feedback",
+  "24 intermediary",
+  "25 self-service",
+  "26 copying (use a cheap proxy)",
+  "28 replace the mechanical system (change the measurement)",
+  "35 parameter changes",
+  "37 thermal expansion (sensitivity to a driver)",
+  "40 composite (combine unlike signals)"
+ ],
+ "morph": {
+  "approach": [
+   "simplify",
+   "combine two parts",
+   "split one part",
+   "change the representation",
+   "add a feedback path",
+   "remove a stage"
+  ],
+  "target": [
+   "the slowest step",
+   "the largest error",
+   "the rarest case",
+   "the most common case",
+   "the inputs",
+   "the outputs"
+  ],
+  "scale": [
+   "one element",
+   "a small group",
+   "everything at once"
+  ],
+  "timing": [
+   "before the event",
+   "during",
+   "after",
+   "periodically"
+  ]
+ }
+}

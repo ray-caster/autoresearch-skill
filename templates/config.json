@@ -14,6 +14,8 @@
   "max_agent_failures": 5,
   "failure_backoff_s": 900,
   "review": {"at_start": true, "after_reverts": 6, "model": "opus"},
+  "lateral": {"enabled": true, "deck": "autoresearch/lateral_techniques.json", "books": "autoresearch/lateral_books.md",
+              "n_ideas": 3, "forced_seed_every": 2},
   "sharpe": null,
   "agent": {
     "cmd": null,

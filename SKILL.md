@@ -14,10 +14,11 @@ voids the round (enforced by git, not trust).
 Files shipped with this skill (copy them into the project, don't edit them per project):
 - `scripts/driver.py` — the overnight loop.
 - `scripts/report.py` — the morning report.
-- `templates/config.json`, `templates/program.md`, `templates/evaluate_example.py`, `templates/gitignore`.
+- `scripts/lateral.py` — the researcher's lateral-thinking step (technique deck + random stimulus + outcome bandit); see `references/lateral.md`.
+- `templates/config.json`, `templates/program.md`, `templates/evaluate_example.py`, `templates/gitignore`, `templates/lateral_techniques.json`, `templates/lateral_books.md`.
 - `templates/trading/` — `evaluate.py` (honest backtester) + `strategy.py` (editable baseline) for trading strategies.
 - `templates/checks/` — `lean_gate.py` (Lean proof gate) and `tla_gate.py` (TLA+ model-checking gate); see `references/hard-checks.md`.
-- `references/` — details read only when needed: `hard-checks.md`, `researcher.md`, `explore-mode.md`, `token-use.md`.
+- `references/` — details read only when needed: `hard-checks.md`, `researcher.md`, `lateral.md`, `explore-mode.md`, `token-use.md`.
 - `tests/run_tests.py` — regression tests with stand-in agents (see **Maintaining this skill**).
 
 Python on this machine: there is no `python` on PATH and some shims are blocked by
@@ -104,18 +105,28 @@ Write or adapt an eval command whose **last stdout line is JSON**:
   sees it. See `references/hard-checks.md` for ready-made ones, including Lean proofs and TLA+ model checking.
 
 ### 5. Scaffold
-Copy into `<project>/autoresearch/`: `driver.py`, `report.py`, and fill in `config.json` and
-`program.md` from the templates. Append `templates/gitignore` to `<project>/.gitignore`.
+Copy into `<project>/autoresearch/`: `driver.py`, `report.py`, `lateral.py`, `lateral_techniques.json` and
+`lateral_books.md` (customise the deck's protocol step 1, lists and morph axes for the domain: `references/lateral.md`),
+and fill in `config.json` and `program.md` from the templates. Append `templates/gitignore` to `<project>/.gitignore`.
 - `config.json`: `editable` globs (keep it to the fewest files possible), `eval_cmd`, `direction`, `eval_timeout_s` (≈3× a normal eval), `max_rounds`, `deadline`, `holdout_cmd`, `target`.
   - **Researcher** (`review` block, Opus): searches the web at the start of each run, keeps a ranked idea
     list that rounds take from by default, re-ranks when progress stalls, and can STOP the run. The script
     records which ideas were kept or falsified. Details and costs: `references/researcher.md`.
+  - **Lateral step** (`lateral` block): each branch-closing / start / list-empty researcher call gets one
+    lateral-thinking technique and a random stimulus (kb card, book, unused input, pooled result to invert,
+    provocation, random design-space cell...), learns which techniques produce kept ideas, and every second
+    branch seeds from a lateral idea. The driver also keeps `runs/literature_log.md` so researcher calls build on
+    earlier searches. Details: `references/lateral.md`.
   - `sharpe: {"periods_per_year": 252}` when the score is an annualised Sharpe ratio — the report then
     computes the Deflated Sharpe Ratio (eval metrics must include `n_obs`, `skew`, `kurtosis`).
   - **Explore mode** (`explore` block, opt-in): use it when the goal is to DISCOVER several different good
     things (alphas, strategies, designs) rather than polish one; otherwise the loop hill-climbs on the
     first thing that worked. Each new idea gets its own branch from the baseline, and good branches join a
     pool. Read `references/explore-mode.md` before using it: the evaluator must emit the pool metric.
+  - **Sharing the subscription with scheduled tasks**: `quiet_hours: ["04:30", "07:45"]` (local time, may
+    cross midnight) pauses agent calls in that window so the morning tasks in `Tools\scheduler\tasks.json`
+    still have usage left. A usage-limit error is waited out (`limit_backoff_s`, default 1800). It doesn't
+    spend the round or count toward `max_agent_failures`. Set quiet hours on any loop that runs overnight.
 - `program.md`: goal, limits, ideas worth trying, ideas banned, and "don't game the metric" rules specific to this problem. This is what the user will iterate on.
 
 Run the eval command once yourself and confirm the JSON parses and the timing is sane. Then commit:

@@ -153,6 +153,30 @@ def test_agent_guards():
     expect("Too many consecutive agent failures" in out, "run did not stop on agent failures")
 
 
+def test_usage_limit_wait():
+    """A usage-limit error is waited out: no agent_error row, no failure counted, the round is retried."""
+    agent = ROUND + textwrap.dedent("""
+        import pathlib
+        c = pathlib.Path("../limit_counter.txt")
+        i = int(c.read_text()) if c.exists() else 0
+        c.write_text(str(i + 1))
+        if i < 3:  # more limit errors in a row than max_agent_failures allows
+            sys.stderr.write("You've hit your 5-hour limit - resets 8:50am\\n")
+            sys.exit(1)
+        open("cand.py", "w").write("X = 5\\n")
+        print("IDEA: r1 | WHY: t | EXPECT: t | FALSIFIED IF: t")
+    """)
+    (WORK / "limit_counter.txt").unlink(missing_ok=True)
+    d = project("limit", {"cand.py": "X = 1\n", "evaluate.py": EVAL_X, "agent.py": agent},
+                base_cfg(max_agent_failures=2, max_rounds=1, limit_backoff_s=1))
+    code, out = run_driver(d)
+    expect(code == 0, f"driver exit {code}: {out[-500:]}")
+    st = [x["status"] for x in rows(d)]
+    expect(st == ["baseline", "keep"], f"statuses {st}")
+    expect(out.count("usage limit hit") == 3, "expected three limit waits")
+    expect("Too many consecutive agent failures" not in out, "limit errors were counted as failures")
+
+
 def test_noise_confirm():
     """Noisy eval: a lucky screening draw is re-run and reverted; a real gain is kept at its confirmed mean."""
     ev = """
@@ -269,6 +293,58 @@ def test_researcher():
     expect(code == 0, f"report exit {code}: {out[-300:]}")
     rep = (d / "autoresearch" / "REPORT.md").read_text(encoding="utf-8")
     expect("kept: 3, falsified: 3" in rep, "Ideas table counts wrong")
+
+
+LATERAL_RESEARCHER = """
+    import json, re, sys
+    pf = sys.argv[1]; reason = re.search(r"research_(\\w+?)_\\d+", pf).group(1)
+    p = open(pf, encoding="utf-8").read()
+    tech = re.search(r"LATERAL STEP: technique `(\\w+)`", p)
+    tech = tech.group(1) if tech else "none"
+    try: cur = json.load(open("autoresearch/runs/ideas.json"))
+    except Exception: cur = []
+    n = len(cur) + 1
+    cur += [{"id": f"I{n}", "idea": "real step lateral", "technique": tech, "stimulus": "s", "source": "https://example.org/lat"},
+            {"id": f"I{n + 1}", "idea": "null tweak lateral", "technique": tech, "stimulus": "s"}]
+    json.dump(cur, open("autoresearch/runs/ideas.json", "w"))
+    open("autoresearch/runs/review.md", "w").write(f"VERDICT: CONTINUE\\n{reason}: see https://example.org/notes\\n")
+    open("../lateral_calls.txt", "a").write(f"{reason} {tech} step={'Map by FUNCTION' in p}\\n")
+    print(f"VERDICT: CONTINUE - {reason} done")
+"""
+
+
+def test_lateral():
+    """Lateral brief in the researcher prompt, tagged ideas credited to their technique, literature log, stats."""
+    (WORK / "lateral_calls.txt").unlink(missing_ok=True)
+    d = project("lateral", {"cand.py": "X = 1\n", "evaluate.py": EVAL_X, "agent.py": LIST_AGENT,
+                            "researcher.py": LATERAL_RESEARCHER},
+                base_cfg(max_rounds=6, review={"at_start": True, "after_reverts": 0,
+                                               "cmd": [PY, "researcher.py", "{prompt_file}"]},
+                         lateral={"enabled": True, "deck": "autoresearch/lateral_techniques.json",
+                                  "books": "autoresearch/lateral_books.md", "kb": str(WORK / "no-such-kb.sqlite")}))
+    shutil.copyfile(SKILL / "scripts" / "lateral.py", d / "autoresearch" / "lateral.py")
+    for t in ("lateral_techniques.json", "lateral_books.md"):
+        shutil.copyfile(SKILL / "templates" / t, d / "autoresearch" / t)
+    for c in (["git", "add", "-A"], ["git", *GITID, "commit", "-qm", "lateral files"]):
+        sh(c, d)
+    code, out = run_driver(d, "--rounds", "3")
+    expect(code == 0, f"driver exit {code}: {out[-500:]}")
+    calls = (WORK / "lateral_calls.txt").read_text().splitlines()
+    expect(calls and all(c.split()[1] != "none" and c.endswith("step=True") for c in calls), f"lateral calls {calls}")
+    st = state(d)
+    log = st.get("lateral_log") or []
+    expect(log and log[0]["n_ideas"] == 2 and log[0]["technique"] == calls[0].split()[1], f"lateral_log {log}")
+    code, out = sh([PY, "-c", "import json, sys; sys.path.insert(0, 'autoresearch'); import lateral as L; "
+                    "cfg = json.load(open('autoresearch/config.json')); st = json.load(open('autoresearch/state.json')); "
+                    "oc = L.outcomes(st, L.load_deck(L.settings(cfg))); "
+                    "print(json.dumps({k: dict(v) for k, v in oc.items() if v}))"], d)
+    oc = json.loads(out.strip().splitlines()[-1])
+    first = calls[0].split()[1]
+    expect(oc.get(first, {}).get("kept", 0) >= 1 and oc[first].get("falsified", 0) >= 1, f"outcomes not credited: {oc}")
+    lit = (d / "autoresearch" / "runs" / "literature_log.md").read_text(encoding="utf-8")
+    expect("example.org/lat" in lit and "example.org/notes" in lit, "literature log missing sources")
+    expect((d / "autoresearch" / "runs" / "lateral_stats.md").exists(), "no lateral_stats.md")
+    expect(clean_tree(d), "tree not clean")
 
 
 def test_no_researcher_prompt_unchanged():
