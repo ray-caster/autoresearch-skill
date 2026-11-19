@@ -91,12 +91,14 @@ def outcomes(state: dict, deck: dict) -> dict[str, Counter]:
     return out
 
 
-def choose_technique(deck: dict, state: dict, rng: random.Random, last: str | None) -> dict:
-    """Thompson sampling: Beta(1 + kept + 2*pooled, 1 + falsified + 0.5*tried) per technique."""
-    oc = outcomes(state, deck)
+def choose_technique(deck: dict, state: dict, rng: random.Random, last: str | None,
+                     oc: dict[str, Counter] | None = None) -> dict:
+    """Thompson sampling: Beta(1 + kept + 2*pooled, 1 + falsified + 0.5*tried) per technique. Projects that are
+    not autoresearch loops (e.g. a daily researcher with its own registry) pass their own outcome counts."""
+    oc = oc if oc is not None else outcomes(state, deck)
     best, best_draw = None, -1.0
     for t in deck["techniques"]:
-        c = oc[t["id"]]
+        c = oc.get(t["id"], Counter())
         draw = rng.betavariate(1 + c["kept"] + 2 * c["pooled"], 1 + c["falsified"] + 0.5 * c["tried"])
         if t["id"] == last:
             draw *= 0.5  # avoid the same technique twice in a row unless it is clearly the best
@@ -233,12 +235,30 @@ def _stimulus(kind: str, lc: dict, deck: dict, state: dict, rng: random.Random) 
 
 
 # ---------------------------------------------------------------- the brief
-def brief(cfg: dict, state: dict, rnd: int, reason: str, technique: str | None = None) -> tuple[str, dict]:
+def brief(cfg: dict, state: dict, rnd: int, reason: str, technique: str | None = None,
+          oc: dict[str, Counter] | None = None, closing: str | None = None, exclude: set[str] | None = None,
+          base: Path | None = None) -> tuple[str, dict]:
+    """oc: outcome counts per technique (default: from this loop's ideas and state). closing: replaces the final
+    'produce N ideas / rank' instruction. exclude: technique ids not to draw (e.g. already drawn today).
+    base: the folder the deck/books/fields paths are relative to (default: this loop's project root)."""
+    global ROOT
+    old_root = ROOT
+    if base is not None:
+        ROOT = Path(base)
+    try:
+        return _brief(cfg, state, rnd, reason, technique, oc, closing, exclude or set())
+    finally:
+        ROOT = old_root
+
+
+def _brief(cfg, state, rnd, reason, technique, oc, closing, exclude) -> tuple[str, dict]:
     lc = settings(cfg)
     deck = load_deck(lc)
     rng = random.Random(f"{state.get('started', '')}|{rnd}|{reason}|{len(state.get('branches', []))}")
     last = (state.get("lateral_log") or [{}])[-1].get("technique")
-    t = next((x for x in deck["techniques"] if x["id"] == technique), None) or choose_technique(deck, state, rng, last)
+    pick_from = {**deck, "techniques": [x for x in deck["techniques"] if x["id"] not in exclude] or deck["techniques"]}
+    t = (next((x for x in deck["techniques"] if x["id"] == technique), None)
+         or choose_technique(pick_from, state, rng, last, oc))
     s_text, s_short, s_meta = stimulus(t["stimulus"], lc, deck, state, rng)
     n_branch = len(state.get("branches", []))
     forced = reason == "branch" and lc["forced_seed_every"] and n_branch % int(lc["forced_seed_every"]) == 0
@@ -250,7 +270,8 @@ def brief(cfg: dict, state: dict, rnd: int, reason: str, technique: str | None =
         *deck["protocol"], "",
         f"Technique: {t['steps']}", f"(Why this technique: {t['source']})", "",
         f"Stimulus:\n{s_text}", "",
-        f"Produce at least {lc['n_ideas']} ideas from this step, tagged \"technique\": \"{t['id']}\". {rank_rule}",
+        (closing.format(technique=t["id"], n=lc["n_ideas"]) if closing else
+         f"Produce at least {lc['n_ideas']} ideas from this step, tagged \"technique\": \"{t['id']}\". {rank_rule}"),
         "===== end of lateral step =====", ""])
     meta = {"round": rnd, "reason": reason, "technique": t["id"], "stimulus": s_short, "forced": bool(forced), **s_meta}
     return text, meta

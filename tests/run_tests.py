@@ -308,18 +308,18 @@ LATERAL_RESEARCHER = """
             {"id": f"I{n + 1}", "idea": "null tweak lateral", "technique": tech, "stimulus": "s"}]
     json.dump(cur, open("autoresearch/runs/ideas.json", "w"))
     open("autoresearch/runs/review.md", "w").write(f"VERDICT: CONTINUE\\n{reason}: see https://example.org/notes\\n")
-    open("../lateral_calls.txt", "a").write(f"{reason} {tech} step={'Map by FUNCTION' in p}\\n")
+    open("../lateral_calls_" + sys.argv[2] + ".txt", "a").write(f"{reason} {tech} step={'Map by FUNCTION' in p}\\n")
     print(f"VERDICT: CONTINUE - {reason} done")
 """
 
 
 def test_lateral():
     """Lateral brief in the researcher prompt, tagged ideas credited to their technique, literature log, stats."""
-    (WORK / "lateral_calls.txt").unlink(missing_ok=True)
+    (WORK / "lateral_calls_lateral.txt").unlink(missing_ok=True)
     d = project("lateral", {"cand.py": "X = 1\n", "evaluate.py": EVAL_X, "agent.py": LIST_AGENT,
                             "researcher.py": LATERAL_RESEARCHER},
                 base_cfg(max_rounds=6, review={"at_start": True, "after_reverts": 0,
-                                               "cmd": [PY, "researcher.py", "{prompt_file}"]},
+                                               "cmd": [PY, "researcher.py", "{prompt_file}", "lateral"]},
                          lateral={"enabled": True, "deck": "autoresearch/lateral_techniques.json",
                                   "books": "autoresearch/lateral_books.md", "kb": str(WORK / "no-such-kb.sqlite")}))
     shutil.copyfile(SKILL / "scripts" / "lateral.py", d / "autoresearch" / "lateral.py")
@@ -329,7 +329,7 @@ def test_lateral():
         sh(c, d)
     code, out = run_driver(d, "--rounds", "3")
     expect(code == 0, f"driver exit {code}: {out[-500:]}")
-    calls = (WORK / "lateral_calls.txt").read_text().splitlines()
+    calls = (WORK / "lateral_calls_lateral.txt").read_text().splitlines()
     expect(calls and all(c.split()[1] != "none" and c.endswith("step=True") for c in calls), f"lateral calls {calls}")
     st = state(d)
     log = st.get("lateral_log") or []
@@ -344,6 +344,32 @@ def test_lateral():
     lit = (d / "autoresearch" / "runs" / "literature_log.md").read_text(encoding="utf-8")
     expect("example.org/lat" in lit and "example.org/notes" in lit, "literature log missing sources")
     expect((d / "autoresearch" / "runs" / "lateral_stats.md").exists(), "no lateral_stats.md")
+    expect(clean_tree(d), "tree not clean")
+
+
+def test_seeds_only():
+    """seeds_only: no lateral step, no web-search brief, the seed table is in the reading list."""
+    (WORK / "lateral_calls_seeds.txt").unlink(missing_ok=True)
+    d = project("seeds_only", {"cand.py": "X = 1\n", "evaluate.py": EVAL_X, "agent.py": LIST_AGENT,
+                               "researcher.py": LATERAL_RESEARCHER},
+                base_cfg(max_rounds=4, review={"at_start": True, "after_reverts": 0,
+                                               "cmd": [PY, "researcher.py", "{prompt_file}", "seeds"]},
+                         seeds_only=True, seed_sources=[{"path": "autoresearch/runs/seeds.md", "note": "seed rows"}],
+                         lateral={"enabled": True, "deck": "autoresearch/lateral_techniques.json"}))
+    shutil.copyfile(SKILL / "scripts" / "lateral.py", d / "autoresearch" / "lateral.py")
+    shutil.copyfile(SKILL / "templates" / "lateral_techniques.json", d / "autoresearch" / "lateral_techniques.json")
+    for c in (["git", "add", "-A"], ["git", *GITID, "commit", "-qm", "files"]):
+        sh(c, d)
+    (d / "autoresearch" / "runs").mkdir(parents=True, exist_ok=True)
+    (d / "autoresearch" / "runs" / "seeds.md").write_text("| S1 | X = 9 |\n", encoding="utf-8")
+    code, out = run_driver(d, "--rounds", "2")
+    expect(code == 0, f"driver exit {code}: {out[-500:]}")
+    calls = (WORK / "lateral_calls_seeds.txt").read_text().splitlines()
+    expect(calls and all(c.split()[1] == "none" for c in calls), f"lateral step ran in seeds-only mode: {calls}")
+    prompt = next((d / "autoresearch" / "runs").glob("research_start_*.prompt.md")).read_text(encoding="utf-8")
+    expect("SEEDS-ONLY MODE" in prompt and "Do not search the web" in prompt, "seeds-only brief missing")
+    expect("Search the web for work newer" not in prompt, "web-search brief still present")
+    expect("autoresearch/runs/seeds.md (seed rows)" in prompt, "seed table not in the reading list")
     expect(clean_tree(d), "tree not clean")
 
 

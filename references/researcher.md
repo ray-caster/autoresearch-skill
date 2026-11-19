@@ -19,3 +19,9 @@ Read this when setting up or changing the researcher, or when a `review` row nee
 - After every call the driver appends the notes and any new sources to `autoresearch/runs/literature_log.md`
   (never overwritten) and lists it in the next call's reading list, so searches are not repeated across
   branches. With a `lateral` block the prompt also carries a LATERAL STEP (`references/lateral.md`).
+- `seed_sources` (config list of `{"path", "note"}`): extra seed tables the researcher reads when they exist,
+  e.g. another project's failed ideas tested on this loop's evaluator (brain-alpha reads frontier-quant's).
+- `seeds_only: true`: the loop stops inventing signals. The researcher does no web search (also drop WebSearch/WebFetch
+  from `review.allowed_tools`), the lateral step is off, and every new branch seeds from an unused row of the
+  `seed_sources` tables (another project's ideas, already script-tested). Rounds only refine the seed. Use it when a
+  separate idea engine (e.g. frontier-quant's daily researcher) feeds this loop.
