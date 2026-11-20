@@ -371,9 +371,16 @@ def ideas_block(state: dict, compact: bool = False) -> str:
 
 def run_sweep(cfg: dict, state: dict, rnd: int, idea: str):
     """After a kept round: brute-force the numbers/settings of the new best with Tools/sweep (no model call).
-    Commits the swept version as its own 'keep' row when it beats the best by min_delta."""
+    Commits the swept version as its own 'keep' row when it beats the best by min_delta.
+    "min_score" in the sweep config gates it: a kept version scoring worse than that is too far from passing for
+    a settings sweep to rescue (a seed is kept whatever it scores), so its evaluations are not spent. In the
+    BRAIN run, sweeps were about 40% of the loop's time and none that started below -0.4 came near passing."""
     sw = cfg.get("sweep")
     if not sw:
+        return
+    floor = sw.get("min_score")
+    if floor is not None and state.get("best") is not None and better(floor, state["best"], cfg["direction"], 0.0):
+        log(f"sweep skipped after round {rnd}: best {fmt(state['best'])} is worse than sweep.min_score {floor}")
         return
     tag = f"round_{rnd:03d}_sweep"
     cmd = ["uv", "run", "-q", "--python", "3.12", sw.get("tool", r"C:\ClaudeWork\Tools\sweep\sweep.py"),
@@ -480,15 +487,147 @@ This round:
 """
 
 
-def invoke(acfg: dict, prompt_file: Path, log_path: Path, default_tools: str):
-    """Run one headless Claude (or stand-in) call on a prompt file. Returns (ok, text, cost, note)."""
+# ---------------------------------------------------------------- Codex backend (ChatGPT subscription)
+# `"backend": "codex"` in the agent or review config sends the call to the Codex CLI first and falls back to
+# Claude (`model`) when Codex fails, hits its limit or replies without usable files. Codex runs read-only in an
+# empty temp folder (its own file and shell tools are not relied on): the files it needs are inlined, it replies
+# with each changed file's full content in a FILE block, and the driver writes only the paths it allows.
+BACKEND_LOG = RUNS / "agent_backends.tsv"  # round, role, backend that answered, note (compare keep rates later)
+FILE_BLOCK_RE = re.compile(r"^=== FILE: (.+?) ===[ \t]*\r?\n(.*?)^=== END FILE ===", re.S | re.M)
+_codex_cool_until = 0.0
+CODEX_LIMIT_RE = re.compile(r"usage limit|rate.?limit|limit reached|too many requests|quota|\b429\b", re.I)
+
+
+def record_backend(rnd, role: str, backend: str, note: str = "") -> None:
+    try:
+        new = not BACKEND_LOG.exists()
+        with BACKEND_LOG.open("a", encoding="utf-8") as f:
+            if new:
+                f.write("time\tround\trole\tbackend\tnote\n")
+            f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M:%S}\t{rnd}\t{role}\t{backend}\t"
+                    f"{note.replace(chr(9), ' ').replace(chr(10), ' ')[:200]}\n")
+    except OSError:
+        pass
+
+
+def codex_exe(acfg: dict) -> str | None:
+    for cand in (acfg.get("codex"), shutil.which("codex"),
+                 str(Path.home() / ".codex" / ".sandbox-bin" / ("codex.exe" if IS_WIN else "codex"))):
+        if cand and Path(cand).is_file():
+            return str(Path(cand).resolve())
+        if cand and shutil.which(cand):
+            return shutil.which(cand)
+    return None
+
+
+def lookup_rows(spec: list[dict], text: str, max_chars: int = 20000) -> str:
+    """Rows of big lookup tables (e.g. a 500 KB field list) whose first column appears in `text`, so a
+    tool-less model can check names without the whole table. spec: [{"path": ..., "max_rows": 200}]."""
+    words = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", text))
+    out = []
+    for s in spec or []:
+        p = Path(s["path"])
+        if not p.is_file():
+            continue
+        lines = p.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        hits = [ln for ln in lines[1:] if ln.split("\t", 1)[0] in words][: s.get("max_rows", 200)]
+        out.append(f"\n===== {p.as_posix()}: header + the {len(hits)} row(s) whose first column is named in "
+                   f"this prompt (a name NOT listed here is not in the table) =====\n{lines[0] if lines else ''}\n"
+                   + "\n".join(hits))
+    return "".join(out)[:max_chars]
+
+
+def codex_prompt(acfg: dict, prompt: str, write_ok: list[str], inline_paths: list[Path]) -> str:
+    lim = acfg.get("inline_chars", 30000)
+    files = "".join(f"\n===== {p.as_posix()} (current content) =====\n{inline(p, lim)}\n"
+                    for p in inline_paths if p.is_file())
+    files += "".join(f"\n===== {s['path']} =====\n{inline(Path(s['path']), s.get('chars', lim))}\n"
+                     for s in acfg.get("inline", []) if Path(s["path"]).is_file())
+    files += lookup_rows(acfg.get("lookup", []), prompt + files)
+    return (f"{prompt}\n\n===== HOW TO ANSWER (this overrides any instruction above to open, read, edit, write or "
+            "run anything) =====\nYou have no tools in this session: do not try to open, edit or run anything. The "
+            "files the instructions above tell you to read are inlined below. Instead of editing or writing files, "
+            "put the COMPLETE new content of each file you change in your reply, exactly in this form:\n"
+            "=== FILE: <path> ===\n<the whole file, no code fences>\n=== END FILE ===\n"
+            f"You may only write these paths: {', '.join(write_ok)}. Anything else is ignored. Then end your reply "
+            f"with the lines the instructions ask for.\n{files}")
+
+
+def invoke_codex(acfg: dict, prompt_file: Path, log_path: Path, write_ok: list[str],
+                 inline_paths: list[Path]):
+    """Returns (ok, text, cost, note). ok only if Codex answered and every FILE block it gave was allowed."""
+    global _codex_cool_until
+    if time.time() < _codex_cool_until:
+        return False, "", 0.0, "codex cooling down after a limit"
+    exe = codex_exe(acfg)
+    if not exe:
+        return False, "", 0.0, "codex CLI not found"
+    import tempfile
+    prompt = codex_prompt(acfg, prompt_file.read_text(encoding="utf-8"), write_ok, inline_paths)
+    prompt_file.with_suffix(".codex.md").write_text(prompt, encoding="utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        last = Path(tmp) / "last.txt"
+        model = ["-m", acfg["codex_model"]] if acfg.get("codex_model") else []  # default: ~/.codex/config.toml
+        cmd = [exe, "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only", *model,
+               "-c", f"model_reasoning_effort={acfg.get('codex_effort', 'medium')}", "-C", tmp, "-o", str(last), "-"]
+        code, out, err = run_cmd(cmd, acfg.get("timeout_s", 900), shell=False, log_path=log_path, input_text=prompt)
+        text = last.read_text(encoding="utf-8", errors="replace") if last.exists() else ""
+    if not text.strip():
+        if CODEX_LIMIT_RE.search(out + err):
+            _codex_cool_until = time.time() + acfg.get("codex_cooldown_s", 1800)
+            return False, "", 0.0, "codex usage limit"
+        return False, "", 0.0, f"codex gave no answer (exit {code}): {(err or out).strip()[-160:]}"
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(f"\n--- codex reply\n{text}")
+    blocks = FILE_BLOCK_RE.findall(text)
+    if not blocks:
+        return False, "", 0.0, "codex reply had no FILE block"
+    clean = []
+    for path, body in blocks:
+        path = path.strip().strip("`").replace("\\", "/")
+        if path.startswith("./"):
+            path = path[2:]
+        if not any(path == w or is_editable(path, [w]) for w in write_ok):
+            return False, "", 0.0, f"codex tried to write {path} (not allowed)"
+        clean.append((path, body))
+    for path, body in clean:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body.rstrip("\n") + "\n", encoding="utf-8")
+    return True, FILE_BLOCK_RE.sub("", text), 0.0, ""
+
+
+def invoke(acfg: dict, prompt_file: Path, log_path: Path, default_tools: str, write_ok: list[str] | None = None,
+           inline_paths: list[Path] | None = None, role: str = "round", rnd=None):
+    """Run one headless Claude (or stand-in) call on a prompt file. Returns (ok, text, cost, note).
+    With backend "codex", Codex is tried first and Claude (`model`) is the fallback."""
+    if acfg.get("backend") == "codex" and not acfg.get("cmd") and write_ok:
+        ok, text, cost, note = invoke_codex(acfg, prompt_file, log_path, write_ok, inline_paths or [])
+        if ok:
+            record_backend(rnd, role, "codex")
+            return ok, text, cost, note
+        record_backend(rnd, role, "codex-failed", note)
+        log(f"codex {role} call failed ({note[:120]}); falling back to Claude {acfg.get('model', 'sonnet')}")
+        if acfg.get("codex_only"):
+            return False, "", 0.0, note
+    if acfg.get("backend") == "codex":  # keep the codex log; the fallback gets its own
+        log_path = log_path.with_name(log_path.stem + ".claude.log")
+    result = _invoke_claude(acfg, prompt_file, log_path, default_tools)
+    if acfg.get("backend") == "codex":
+        record_backend(rnd, role, f"claude-{acfg.get('model', 'sonnet')}" if not acfg.get("cmd") else "cmd",
+                       "" if result[0] else result[3])
+    return result
+
+
+def _invoke_claude(acfg: dict, prompt_file: Path, log_path: Path, default_tools: str):
     timeout = acfg.get("timeout_s", 900)
     if acfg.get("cmd"):  # custom / stand-in agent: list with {prompt_file} placeholder
         cmd = [c.replace("{prompt_file}", str(prompt_file)) for c in acfg["cmd"]]
         code, out, err = run_cmd(cmd, timeout, shell=False, log_path=log_path)
         text, cost = out, 0.0
     else:
-        exe = shutil.which(acfg.get("claude", "claude"))
+        exe = acfg.get("claude", "claude")
+        exe = str(Path(exe).resolve()) if Path(exe).is_file() else shutil.which(exe)
         if not exe:
             return False, "", 0.0, "claude CLI not found on PATH"
         tools = acfg.get("allowed_tools", default_tools)
@@ -527,7 +666,9 @@ def run_agent(cfg: dict, rnd: int):
     prompt_file = RUNS / f"round_{rnd:03d}.prompt.md"
     prompt_file.write_text(build_prompt(cfg, load_state(), rnd), encoding="utf-8")
     acfg = {**cfg.get("agent", {}), "allowed_tools": agent_tools(cfg)}
-    ok, text, cost, note = invoke(acfg, prompt_file, RUNS / f"round_{rnd:03d}.agent.log", "Read,Edit")
+    editable = [Path(f) for f in git("ls-files").splitlines() if is_editable(f, cfg["editable"])]
+    ok, text, cost, note = invoke(acfg, prompt_file, RUNS / f"round_{rnd:03d}.agent.log", "Read,Edit",
+                                  write_ok=list(cfg["editable"]), inline_paths=editable, role="round", rnd=rnd)
     if not ok:
         return False, "", None, cost, note
     idea, idea_id, skip = "", None, ""
@@ -681,8 +822,13 @@ VERDICT: <CONTINUE|PIVOT|STOP> - <one sentence>
     archive_ideas(load_ideas())
     known_ids = {i["id"] for i in load_ideas()} | set(state.get("idea_status", {}))
     review_before = REVIEW.read_bytes() if REVIEW.exists() else None
+    read_paths = [AR / "program.md", *[Path(f) for f in git("ls-files").splitlines()
+                                        if is_editable(f, cfg["editable"])], BEST_EVAL, lit,
+                  *[p for _, p in project_notes()], LIT_LOG, FIELDSCAN_TOP,
+                  *[Path(e["path"]) for e in cfg.get("seed_sources", [])]]
     ok, text, cost, note = invoke(rc, prompt_file, RUNS / f"research_{reason}_{rnd:03d}.agent.log",
-                                  rc["allowed_tools"])
+                                  rc["allowed_tools"], write_ok=[IDEAS.as_posix(), REVIEW.as_posix()],
+                                  inline_paths=read_paths, role=f"research-{reason}", rnd=rnd)
     if changed_paths():  # the researcher may only write the (git-ignored) runs/ files
         revert()
         note = (note + "; researcher touched tracked files (reverted)").strip("; ")
@@ -854,9 +1000,29 @@ def should_stop(state: dict) -> bool:
     return False
 
 
+def recent_review(cfg: dict, state: dict) -> bool:
+    """True when a restart should skip the start-of-run researcher call: the last call was under
+    review.start_min_gap_h hours ago (default 6) and the ranked list still has untried ideas. Restarts after a
+    STOP file or a crash otherwise paid for a fresh (Opus) review each time, often minutes apart."""
+    gap_h = review_cfg(cfg).get("start_min_gap_h", 6)
+    last = state.get("last_review_at")
+    if not gap_h or not last:
+        return False
+    try:
+        age_h = (dt.datetime.now() - dt.datetime.fromisoformat(last)).total_seconds() / 3600
+    except ValueError:
+        return False
+    n = len(untried_ideas(state))
+    if age_h < gap_h and n:
+        log(f"start review skipped: the researcher ran {age_h:.1f} h ago and {n} idea(s) are untried")
+        return True
+    return False
+
+
 def research(cfg: dict, state: dict, rnd: int, reason: str, streak: int = 0) -> str:
     """Run the researcher, log it as a `review` row, and return its verdict."""
     verdict, summary, rcost = run_research(cfg, state, rnd, reason, streak)
+    state["last_review_at"] = dt.datetime.now().isoformat(timespec="seconds")
     state["cost_usd"] = state.get("cost_usd", 0.0) + rcost
     state["streak"] = 0
     state["ideas_exhausted"] = not untried_ideas(state)  # don't re-call for an empty list until it refills
@@ -1003,6 +1169,7 @@ def main() -> None:
     try:
         # start of a night: the researcher searches for new work and writes the first ranked list
         if (review_cfg(cfg).get("at_start") and not args.skip_research and not should_stop(state)
+                and not recent_review(cfg, state)
                 and research(cfg, state, state["round"], "start") == "STOP"):
             budget = 0
         while (state["round"] < max_rounds and budget > 0

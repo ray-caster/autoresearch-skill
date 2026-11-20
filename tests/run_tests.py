@@ -26,6 +26,7 @@ from pathlib import Path
 SKILL = Path(__file__).resolve().parent.parent
 WORK = SKILL / "tests" / "_work"
 PY = sys.executable
+IS_WIN_TEST = os.name == "nt"
 GITID = ["-c", "user.name=test", "-c", "user.email=test@localhost"]
 
 
@@ -293,6 +294,66 @@ def test_researcher():
     expect(code == 0, f"report exit {code}: {out[-300:]}")
     rep = (d / "autoresearch" / "REPORT.md").read_text(encoding="utf-8")
     expect("kept: 3, falsified: 3" in rep, "Ideas table counts wrong")
+
+
+FAKE_CODEX = r"""
+    import re, sys
+    a = sys.argv; out = a[a.index("-o") + 1]
+    p = sys.stdin.read()
+    rnd = int(re.search(r"You are round (\d+)", p).group(1))
+    x = int(re.search(r"===== cand.py \(current content\) =====\nX = (\d+)", p).group(1))
+    assert "HOW TO ANSWER" in p and "fields.tsv: header + the 1 row" in p, "codex prompt missing parts"
+    if rnd == 3:  # tries to write the evaluator: must be refused, then Claude takes the round
+        body = "=== FILE: evaluate.py ===\nprint(99)\n=== END FILE ===\nIDEA: cheat"
+    else:
+        body = f"thinking\n=== FILE: cand.py ===\nX = {x + 1}\n=== END FILE ===\nIDEA: up {rnd} | WHY: a | EXPECT: b | FALSIFIED IF: c"
+    open(out, "w", encoding="utf-8").write(body)
+"""
+FAKE_CLAUDE = r"""
+    import json, re, sys
+    sys.stdin.read()
+    src = open("cand.py").read(); x = int(re.search(r"X = (\d+)", src).group(1))
+    open("cand.py", "w").write(f"X = {x + 1}\n")
+    print(json.dumps({"result": "IDEA: fallback | WHY: a | EXPECT: b | FALSIFIED IF: c", "total_cost_usd": 0.01}))
+"""
+
+
+def test_codex_backend():
+    """backend=codex: inlined files + lookup rows, FILE blocks written, disallowed path refused -> Claude fallback."""
+    if not IS_WIN_TEST:
+        return  # the .cmd stand-ins are Windows-only
+    d = project("codex", {"cand.py": "X = 1\n", "evaluate.py": EVAL_X, "fakecodex.py": FAKE_CODEX,
+                          "fakeclaude.py": FAKE_CLAUDE, "ref/fields.tsv": "id\tdesc\nEXPECT\tnamed in the prompt\nZZZUNUSED\tnot named\n",
+                          "codex.cmd": f'@"{PY}" "%~dp0fakecodex.py" %*\n',
+                          "claude.cmd": f'@"{PY}" "%~dp0fakeclaude.py" %*\n'},
+                base_cfg(max_rounds=3, agent={"backend": "codex", "codex": "codex.cmd", "claude": "claude.cmd",
+                                              "lean": False, "timeout_s": 60,
+                                              "lookup": [{"path": "ref/fields.tsv"}]}))
+    code, out = run_driver(d)
+    expect(code == 0, f"driver exit {code}: {out[-500:]}")
+    r = [x for x in rows(d) if x["status"] != "baseline"]
+    expect([x["status"] for x in r] == ["keep", "keep", "keep"], f"statuses {[(x['status'], x['note']) for x in r]}")
+    expect("fallback" in r[2]["idea"], f"round 3 should be Claude's: {r[2]['idea']}")
+    expect("99" not in (d / "evaluate.py").read_text(), "codex wrote the evaluator")
+    log = (d / "autoresearch" / "runs" / "agent_backends.tsv").read_text(encoding="utf-8").splitlines()[1:]
+    got = [ln.split("\t")[3] for ln in log]
+    expect(got == ["codex", "codex", "codex-failed", "claude-sonnet"], f"backends {got}")
+    expect("not allowed" in log[2], f"refusal not logged: {log[2]}")
+
+
+def test_start_review_debounce():
+    """A restart within review.start_min_gap_h skips the start review while untried ideas remain."""
+    (WORK / "research_calls_debounce.txt").unlink(missing_ok=True)
+    d = project("debounce", {"cand.py": "X = 1\n", "evaluate.py": EVAL_X, "agent.py": LIST_AGENT,
+                             "researcher.py": RESEARCHER},
+                base_cfg(max_rounds=10, review={"at_start": True, "after_reverts": 0,
+                                                "cmd": [PY, "researcher.py", "{prompt_file}", "debounce"]}))
+    for _ in range(2):
+        code, out = run_driver(d, "--rounds", "1")
+        expect(code == 0, f"driver exit {code}: {out[-500:]}")
+    starts = [x for x in rows(d) if x["status"] == "review"]
+    expect(len(starts) == 1, f"expected one start review, got {len(starts)}")
+    expect("start review skipped" in out, "skip not logged")
 
 
 LATERAL_RESEARCHER = """

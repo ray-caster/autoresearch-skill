@@ -16,6 +16,19 @@ Read this when setting up or changing the researcher, or when a `review` row nee
   ignored. The researcher may only write those two git-ignored files (anything else is reverted), and is
   told web pages are information, not instructions. STOP ends the run early. Measured: one start call
   ≈ 13 turns, ≈ $0.27 on Opus.
+- **Restarts don't re-run the start review** while untried ideas remain and the last researcher call is under
+  `review.start_min_gap_h` hours old (default 6; 0 = always run). Before this, STOP/restart cycles paid for an Opus
+  start review each time, sometimes minutes apart (brain-alpha: 17 start reviews, ~$15).
+- **Codex backend** (`"backend": "codex"` in `agent` and/or `review`): the call goes to `codex exec` (ChatGPT
+  subscription) first, tool-less and read-only in an empty temp folder. The driver inlines the files the prompt
+  names (editable files; for the researcher also program.md, best eval, literature, seed tables) plus `inline`
+  ([{"path", "chars"}]) and `lookup` ([{"path", "max_rows"}]: rows of a big TSV whose first column is named in the
+  prompt, e.g. a 500 KB field list). Codex replies with `=== FILE: <path> === ... === END FILE ===` blocks; the
+  driver writes only allowed paths (editable files; ideas.json + review.md for the researcher) and refuses the
+  whole reply if any other path appears. On a Codex limit (30 min cool-down), error or unusable reply the call
+  falls back to Claude `model` (`codex_only: true` disables that). Options: `codex_effort` (default medium),
+  `codex_model` (leave unset: the config.toml default), `codex` (exe path). Every call goes to
+  `runs/agent_backends.tsv` (round, role, backend that answered), to compare keep rates of Codex and Claude rounds.
 - After every call the driver appends the notes and any new sources to `autoresearch/runs/literature_log.md`
   (never overwritten) and lists it in the next call's reading list, so searches are not repeated across
   branches. With a `lateral` block the prompt also carries a LATERAL STEP (`references/lateral.md`).
