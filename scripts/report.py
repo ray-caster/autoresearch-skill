@@ -52,6 +52,27 @@ def holdout(cfg, tag):
         return None, str(e)
 
 
+def sweep_trial_scores(path=None):
+    """Scores of every variant the sweep tool tried (runs/sweep_trials.tsv: time, path, value, score, seconds,
+    metrics). "base" rows are left out: they re-score the kept round, which results.tsv already has. A failed
+    variant (score -99 or worse) is no measurement and is left out too."""
+    path = path or RUNS / "sweep_trials.tsv"
+    out = []
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        p = line.split("\t")
+        if len(p) < 4 or p[1] == "base":
+            continue
+        try:
+            s = float(p[3])
+        except ValueError:
+            continue
+        if math.isfinite(s) and s > -99:
+            out.append(s)
+    return out
+
+
 def multiple_testing(cfg, rows, state, ok_scores, rerun_metrics):
     """Many variants were tried, so the best is biased upward. For Sharpe scores, compute the
     Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014): P(true Sharpe > 0) after N trials."""
@@ -59,9 +80,13 @@ def multiple_testing(cfg, rows, state, ok_scores, rerun_metrics):
     # "crash"; an explore "branch" row repeats its branch's best)
     trial_scores = [float(r["score"]) for r in rows if r["score"] and r["status"] in ("keep", "revert", "fail")]
     trial_scores.append(state["baseline"])
+    n_rounds = len(trial_scores)
+    swept = sweep_trial_scores()  # the settings sweeps after kept rounds are tries too
+    trial_scores += swept
     n = len(trial_scores)
     out = ["", "## Many-attempts check",
-           f"{n} variants were scored. The best of {n} tries is biased upward by luck; "
+           f"{n} variants were scored" + (f" ({n_rounds} rounds and {len(swept)} sweep trials)" if swept else "")
+           + f". The best of {n} tries is biased upward by luck; "
            "the re-runs and held-out check above are the honest numbers."]
     sh = cfg.get("sharpe")
     if not sh or not ok_scores or not rerun_metrics:
