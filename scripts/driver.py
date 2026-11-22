@@ -60,8 +60,19 @@ def log(msg: str) -> None:
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
+GIT_LOCK_WAIT_S = 60  # how long a git call waits for someone else's .git/*.lock to go away
+
+
 def git(*args: str, check: bool = True) -> str:
-    r = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    # Another process (any chat's or health.py's `git status`, the brain-daily-explore run) can hold .git/index.lock
+    # for a moment. Failing at once made commit()/revert() raise mid-round: the improvement was then saved as "seen"
+    # but never committed, and a revert in 'finally' could leave a dirty tree (Tools/audit/tla/Autoresearch.tla).
+    end = time.time() + GIT_LOCK_WAIT_S
+    while True:
+        r = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode == 0 or ".lock" not in r.stderr or time.time() >= end:
+            break
+        time.sleep(0.5)
     if check and r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
     return r.stdout
@@ -159,6 +170,43 @@ def append_result(row: dict) -> None:
 
 def save_state(state: dict) -> None:
     STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+KEPT_MSG = re.compile(r"^autoresearch r(\d+)(?: sweep)?: .*\(score ([^()\s]+)\)\s*$")
+
+
+def catch_up_head(state: dict) -> bool:
+    """A kill between commit() and save_state() leaves a kept commit on HEAD that state.json does not know, so the
+    resumed run would judge candidates against an older, lower best (Tools/audit/tla/Autoresearch.tla). Walk back
+    from HEAD to state.json's best_commit (or, on an explore branch with no kept version yet, to the branch's opening
+    commit); if a kept commit is newer, take best from its "(score X)" message (rounded to 6 significant digits)."""
+    bc = state.get("best_commit") or ""
+    log_lines = git("log", "--first-parent", "--format=%h %H %s", "-n", "200", check=False).splitlines()
+    found, anchored = None, False
+    for line in log_lines:
+        short, full, subj = (line.split(" ", 2) + ["", ""])[:3]
+        if bc and (full.startswith(bc) or short.startswith(bc) or bc.startswith(short)):
+            anchored = True
+            break
+        if not bc and subj.startswith("autoresearch branch "):
+            anchored = True
+            break
+        m = KEPT_MSG.match(subj)
+        if m and found is None:
+            try:
+                found = (short, float(m.group(2)), int(m.group(1)))
+            except ValueError:
+                continue
+    if not (found and anchored):
+        return False
+    sha, score, rnd = found
+    log(f"state.json is behind HEAD (killed between commit and save?): best {fmt(state.get('best'))} -> {fmt(score)} "
+        f"from commit {sha}")
+    state.update(best=score, best_commit=sha, kept=state.get("kept", 0) + 1, round=max(state.get("round", 0), rnd))
+    state.setdefault("seen", {})[candidate_hash(json.loads(CONFIG.read_text(encoding="utf-8-sig"))["editable"])] = fmt(score)
+    if state.get("seed_pending"):
+        state["seed_pending"] = False
+    return True
 
 
 def better(score: float, best: float, direction: str, delta: float) -> bool:
@@ -1148,6 +1196,7 @@ def main() -> None:
         state.update(status="running", pid=os.getpid())
         if not state.get("deadline") or dt.datetime.now() >= dt.datetime.fromisoformat(state["deadline"]):
             state["deadline"] = deadline_from(cfg)
+        catch_up_head(state)
         save_state(state)
         log(f"resuming at round {state['round'] + 1}, best={fmt(state['best'])}")
     ex = explore_cfg(cfg)
@@ -1244,7 +1293,13 @@ def main() -> None:
                             score = c[1]
                             state["seen"][h] = fmt(score)
                             row.update(score=fmt(score))
-                        sha = commit(changed, f"autoresearch r{rnd}: {idea[:72]} (score {score:.6g})")
+                        try:
+                            sha = commit(changed, f"autoresearch r{rnd}: {idea[:72]} (score {score:.6g})")
+                        except Exception:
+                            # not committed, so it must not count as tried: 'finally' saves state.json, and a hash
+                            # left in "seen" would make this improvement a duplicate forever
+                            state["seen"].pop(h, None)
+                            raise
                         state.update(best=score, best_commit=sha, kept=state.get("kept", 0) + 1)
                         shutil.copyfile(RUNS / f"round_{rnd:03d}.eval.log", BEST_EVAL)
                         row.update(status="keep", commit=sha)
