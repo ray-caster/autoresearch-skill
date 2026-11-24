@@ -15,9 +15,17 @@ prompt at the start of a run, whenever a branch closes, and when the idea list i
   - `field`: an under-used input from `reference/fields.tsv`, when the project has one;
   - `pool_alpha`: a pooled result to invert or abstract;
   - `provocation`, `assumption`, `persona`, `triz`: one entry from the deck's lists;
-  - `morph_cell`: one random cell of the deck's design-space box.
+  - `morph_cell`: one random cell of the deck's design-space box;
+  - `constraint`: one hard design constraint from the deck's `constraints` list. Constraints steer generation
+    toward useful ideas, while arbitrary random stimuli alone do nothing. Aim them at the loop's own failure
+    modes (turnover, costs, a factor that ideas keep collapsing onto).
 
-  A kind whose source is missing falls back (field → kb card → provocation), so a project with no kb still works.
+  A kind whose source is missing falls back (field → kb card → provocation; constraint → assumption), so a project
+  with no kb or no `constraints` list still works.
+
+Outcome counts may be fractional. A project whose gate nobody passes yet should credit near misses (e.g. kept += g,
+falsified += 1 - g for a graded score g), or every technique stays at Beta(1, 1 + n) and the sampler cannot learn;
+see `Tools\scheduler\prechecks\frontier-researcher.py` `grade()`.
 
 The researcher follows a fixed protocol:
 1. Abstract the target in functional terms.

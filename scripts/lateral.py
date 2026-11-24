@@ -183,7 +183,8 @@ def pool_alpha(state: dict, rng: random.Random) -> tuple[str, str, dict]:
             {"distance": "near", "ref": p["branch"]})
 
 
-FALLBACK = {"field": "kb_card", "kb_card": "provocation", "book": "provocation", "pool_alpha": "assumption"}
+FALLBACK = {"field": "kb_card", "kb_card": "provocation", "book": "provocation", "pool_alpha": "assumption",
+            "constraint": "assumption"}
 
 
 def stimulus(kind: str, lc: dict, deck: dict, state: dict, rng: random.Random) -> tuple[str, str, dict]:
@@ -218,6 +219,9 @@ def _stimulus(kind: str, lc: dict, deck: dict, state: dict, rng: random.Random) 
     if kind == "provocation":
         s = rng.choice(deck["provocations"])
         return s, s[4:60], {"distance": "mid"}
+    if kind == "constraint":  # a hard design constraint from the deck's "constraints" list
+        s = rng.choice(deck["constraints"])
+        return f"Hard constraint the idea must satisfy: {s}", s[:60], {"distance": "near"}
     if kind == "assumption":
         s = rng.choice(deck["assumptions"])
         return f"Assumption to break: {s}", s[:60], {"distance": "near"}
